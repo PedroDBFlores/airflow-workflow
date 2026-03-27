@@ -2,7 +2,8 @@
 example_kubernetes_dag.py
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 A sample Apache Airflow DAG that demonstrates how to use the
-KubernetesPodOperator alongside standard operators.
+KubernetesPodOperator alongside standard operators, written using
+the TaskFlow API annotation format (@dag / @task decorators).
 
 Local testing (Docker Compose)
 -------------------------------
@@ -24,10 +25,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from airflow import DAG
-from airflow.operators.bash import BashOperator
-from airflow.operators.python import PythonOperator
-from airflow.providers.cncf.kubernetes.operators.pod import KubernetesPodOperator
+from airflow.decorators import dag, task
+from airflow.operators.python import get_current_context
 from kubernetes.client import models as k8s
 
 # ---------------------------------------------------------------------------
@@ -42,10 +41,11 @@ default_args = {
     "retry_delay": timedelta(minutes=5),
 }
 
+
 # ---------------------------------------------------------------------------
-# DAG definition
+# DAG definition using the @dag annotation
 # ---------------------------------------------------------------------------
-with DAG(
+@dag(
     dag_id="example_kubernetes_dag",
     description="Example DAG: local Docker testing + Kubernetes pod tasks",
     schedule=timedelta(days=1),
@@ -53,36 +53,32 @@ with DAG(
     catchup=False,
     default_args=default_args,
     tags=["example", "kubernetes"],
-) as dag:
-
+)
+def example_kubernetes_dag():
     # ------------------------------------------------------------------
-    # Task 1 – BashOperator: simple shell command, runs inside the
+    # Task 1 – @task.bash: simple shell command, runs inside the
     #           Airflow worker container (or locally in Docker Compose).
     # ------------------------------------------------------------------
-    greet = BashOperator(
-        task_id="greet",
-        bash_command='echo "Starting pipeline at $(date)"',
-    )
+    @task.bash
+    def greet() -> str:
+        return 'echo "Starting pipeline at $(date)"'
 
     # ------------------------------------------------------------------
-    # Task 2 – PythonOperator: arbitrary Python logic that also runs
+    # Task 2 – @task: arbitrary Python logic that also runs
     #           inside the Airflow worker process.
     # ------------------------------------------------------------------
-    def _generate_data(**context) -> dict:
+    @task
+    def generate_data() -> dict:
         """Simulate producing a small payload pushed to XCom."""
+        context = get_current_context()
         payload = {"batch_id": context["run_id"], "items": list(range(5))}
         print(f"Generated payload: {payload}")
         return payload
 
-    generate_data = PythonOperator(
-        task_id="generate_data",
-        python_callable=_generate_data,
-    )
-
     # ------------------------------------------------------------------
-    # Task 3 – KubernetesPodOperator: launches a disposable pod in the
-    #           configured Kubernetes cluster.  The pod runs a lightweight
-    #           Python image to simulate a processing step.
+    # Task 3 – @task.kubernetes: launches a disposable pod in the
+    #           configured Kubernetes cluster.  The decorated function
+    #           body runs inside a lightweight Python image.
     #
     #   • in_cluster=False  → uses ~/.kube/config (local testing / CI)
     #   • in_cluster=True   → uses the pod's service-account token
@@ -90,19 +86,10 @@ with DAG(
     #
     #   Override `namespace` and `image` to match your environment.
     # ------------------------------------------------------------------
-    process_data = KubernetesPodOperator(
-        task_id="process_data",
+    @task.kubernetes(
         name="airflow-process-data-pod",
         namespace="airflow",
         image="python:3.11-slim",
-        cmds=["python", "-c"],
-        arguments=[
-            (
-                "import json, sys; "
-                "data = {'status': 'processed', 'result': [x**2 for x in range(5)]}; "
-                "print(json.dumps(data))"
-            )
-        ],
         # Resource requests keep the demo pod small
         container_resources=k8s.V1ResourceRequirements(
             requests={"cpu": "100m", "memory": "128Mi"},
@@ -115,16 +102,25 @@ with DAG(
         # set to False (default) when testing locally via Docker Compose.
         in_cluster=False,
     )
+    def process_data():
+        # Imports must live inside @task.kubernetes functions because the
+        # function body is serialised and executed inside the remote pod.
+        import json  # noqa: PLC0415
+
+        data = {"status": "processed", "result": [x**2 for x in range(5)]}
+        print(json.dumps(data))
 
     # ------------------------------------------------------------------
-    # Task 4 – BashOperator: final summary step.
+    # Task 4 – @task.bash: final summary step.
     # ------------------------------------------------------------------
-    summarize = BashOperator(
-        task_id="summarize",
-        bash_command='echo "Pipeline complete at $(date)"',
-    )
+    @task.bash
+    def summarize() -> str:
+        return 'echo "Pipeline complete at $(date)"'
 
     # ------------------------------------------------------------------
     # Task dependency chain
     # ------------------------------------------------------------------
-    greet >> generate_data >> process_data >> summarize
+    greet() >> generate_data() >> process_data() >> summarize()
+
+
+example_kubernetes_dag()
