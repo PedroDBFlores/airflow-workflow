@@ -1,0 +1,8 @@
+---
+# Dedicated namespace for all Airflow resources
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: airflow
+  labels:
+    app.kubernetes.io/part-of: airflow

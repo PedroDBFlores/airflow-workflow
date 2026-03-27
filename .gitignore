@@ -1,0 +1,17 @@
+# Airflow runtime directories (created by Docker Compose or local runs)
+logs/
+plugins/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+env/
+
+# Environment files with secrets – keep .env as a template, never commit real secrets
+# (add your real .env to a private store / CI secrets manager)
+
+# OS
+.DS_Store
+Thumbs.db
