@@ -1,0 +1,19 @@
+---
+# ConfigMap containing non-secret Airflow settings
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: airflow-config
+  namespace: airflow
+  labels:
+    app.kubernetes.io/part-of: airflow
+data:
+  AIRFLOW__CORE__EXECUTOR: LocalExecutor
+  AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+  AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+  # Note: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN is set per-Deployment using
+  # credentials from the airflow-postgres-secret Secret to avoid hardcoding
+  # database passwords here.
+  # Use in-cluster config for KubernetesPodOperator when running inside K8s
+  AIRFLOW__KUBERNETES__IN_CLUSTER: "true"
+  AIRFLOW__KUBERNETES__NAMESPACE: "airflow"

@@ -1,0 +1,49 @@
+---
+# ServiceAccount used by the Airflow pods.
+# The scheduler needs permission to create / delete pods for the
+# KubernetesPodOperator tasks.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: airflow
+  namespace: airflow
+  labels:
+    app.kubernetes.io/part-of: airflow
+
+---
+# Role that allows the scheduler to manage pods in the airflow namespace
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: airflow-pod-manager
+  namespace: airflow
+  labels:
+    app.kubernetes.io/part-of: airflow
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+
+---
+# Bind the Role to the ServiceAccount
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: airflow-pod-manager-binding
+  namespace: airflow
+  labels:
+    app.kubernetes.io/part-of: airflow
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: airflow-pod-manager
+subjects:
+  - kind: ServiceAccount
+    name: airflow
+    namespace: airflow
