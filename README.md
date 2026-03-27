@@ -1,6 +1,8 @@
 # airflow-workflow
 
-An Apache Airflow example project that you can run **locally with Docker Compose** for development and testing, and deploy to a **Kubernetes cluster** for production use.  The example DAG demonstrates the [`KubernetesPodOperator`](https://airflow.apache.org/docs/apache-airflow-providers-cncf-kubernetes/stable/operators.html) so the same workflow definition works in both environments.
+An Apache Airflow example project that you can run **locally with Docker Compose** for development and testing, deploy to a **Kubernetes cluster** for production use, or connect to an **existing remote Airflow instance**. The example DAG demonstrates the [`KubernetesPodOperator`](https://airflow.apache.org/docs/apache-airflow-providers-cncf-kubernetes/stable/operators.html) so the same workflow definition works in all three environments.
+
+All operations are available through a single `Makefile` — run `make help` to see every available target.
 
 ---
 
@@ -17,10 +19,43 @@ An Apache Airflow example project that you can run **locally with Docker Compose
 │   ├── configmap.yaml              # Non-secret Airflow settings
 │   ├── postgres.yaml               # Postgres Deployment, Service, PVC
 │   └── airflow.yaml                # Webserver + Scheduler Deployments, Service, PVCs
+├── scripts/
+│   └── remote.sh                   # REST API + rsync helper for remote Airflow instances
+├── Makefile                        # All workflow management targets
 ├── docker-compose.yml              # Local development stack
 ├── .env                            # Environment variable template
 └── .gitignore
 ```
+
+---
+
+## Quick reference (`make` targets)
+
+```
+Docker (local)
+  docker-up              Start the local Airflow stack (detached)
+  docker-down            Stop the local Airflow stack (keep volumes)
+  docker-destroy         Stop the local stack and remove all volumes
+  docker-logs            Follow logs from all containers
+  docker-ps              Show status of local Docker containers
+
+Kubernetes
+  k8s-deploy             Deploy Airflow to Kubernetes (applies all manifests in order)
+  k8s-teardown           Remove all Airflow Kubernetes resources
+  k8s-status             Show pod and service status in the airflow namespace
+  k8s-forward            Port-forward the webserver to http://localhost:8080
+  k8s-logs-scheduler     Follow the scheduler logs
+  k8s-logs-webserver     Follow the webserver logs
+
+Remote Airflow instance
+  remote-check           Check connectivity to the remote Airflow instance
+  remote-sync            Sync DAG files to the remote host over SSH
+  remote-unpause         Unpause DAG_ID on the remote Airflow instance
+  remote-trigger         Trigger a run of DAG_ID on the remote Airflow instance
+  remote-status          Show the last 5 runs of DAG_ID on the remote Airflow instance
+```
+
+`DAG_ID` defaults to `example_kubernetes_dag`. Override it with `make remote-trigger DAG_ID=my_dag`.
 
 ---
 
@@ -44,7 +79,7 @@ python -c "import secrets; print(secrets.token_hex(16))"
 # Edit .env and set AIRFLOW__CORE__FERNET_KEY and AIRFLOW__WEBSERVER__SECRET_KEY
 
 # 3. Start the stack (Postgres + Airflow init + webserver + scheduler)
-docker compose up -d
+make docker-up
 
 # 4. Wait ~30 s for the webserver to become healthy, then open
 #    http://localhost:8080  (credentials: admin / admin)
@@ -53,8 +88,8 @@ docker compose up -d
 ### Stopping the stack
 
 ```bash
-docker compose down          # stop containers, keep volumes
-docker compose down -v       # stop containers and remove volumes
+make docker-down      # stop containers, keep volumes
+make docker-destroy   # stop containers and remove volumes
 ```
 
 ---
@@ -79,7 +114,7 @@ Tasks run in the order: `greet → generate_data → process_data → summarize`
 * `kubectl` configured to target your cluster
 * A storage class that supports `ReadWriteMany` for the DAGs and logs PVCs (e.g. NFS, EFS, or a cloud-provider file share)
 
-### Apply the manifests
+### Deploy
 
 ```bash
 # 1. Edit kubernetes/secrets.yaml and replace the placeholder keys
@@ -88,21 +123,16 @@ Tasks run in the order: `greet → generate_data → process_data → summarize`
 #      python -c "import secrets; print(secrets.token_hex(16))"
 
 # 2. Apply all manifests in order
-kubectl apply -f kubernetes/namespace.yaml
-kubectl apply -f kubernetes/rbac.yaml
-kubectl apply -f kubernetes/secrets.yaml
-kubectl apply -f kubernetes/configmap.yaml
-kubectl apply -f kubernetes/postgres.yaml
-kubectl apply -f kubernetes/airflow.yaml
+make k8s-deploy
 
 # 3. Copy your DAG(s) into the airflow-dags-pvc volume, or configure a
 #    GitSync sidecar / your CI/CD pipeline to sync dags/ into the PVC.
 
 # 4. Check pod status
-kubectl get pods -n airflow
+make k8s-status
 
-# 5. Access the webserver (port-forward for testing)
-kubectl port-forward svc/airflow-webserver 8080:8080 -n airflow
+# 5. Access the webserver
+make k8s-forward
 # then open http://localhost:8080
 ```
 
@@ -113,7 +143,65 @@ kubectl port-forward svc/airflow-webserver 8080:8080 -n airflow
 | `AIRFLOW__KUBERNETES__IN_CLUSTER` | `false` (uses `~/.kube/config`) | `true` (uses pod service account) |
 | kubeconfig volume | `~/.kube` mounted read-only | Not needed |
 
-The example DAG sets `in_cluster=False` by default.  When deploying to Kubernetes, update `configmap.yaml` (already set to `"true"`) or patch the DAG's `KubernetesPodOperator` call.
+The example DAG sets `in_cluster=False` by default.  When deploying to Kubernetes, `configmap.yaml` already sets `AIRFLOW__KUBERNETES__IN_CLUSTER=true` to enable the pod's service-account token.
+
+---
+
+## Connecting to a remote Airflow instance
+
+The `remote-*` make targets use the [Airflow REST API](https://airflow.apache.org/docs/apache-airflow/stable/stable-rest-api-ref.html) to manage DAGs and DAG runs on any existing Airflow 2.x deployment (cloud-managed, self-hosted, etc.).  DAG files are pushed to the remote host over SSH with `rsync`.
+
+### 1. Configure `.env`
+
+Edit `.env` and set the remote variables:
+
+```dotenv
+# URL of the remote webserver (no trailing slash)
+AIRFLOW_REMOTE_URL=https://your-airflow-instance.example.com
+
+# REST API credentials
+AIRFLOW_REMOTE_USERNAME=admin
+AIRFLOW_REMOTE_PASSWORD=your_password
+
+# SSH settings for syncing DAG files (leave blank to skip rsync)
+AIRFLOW_REMOTE_SSH_HOST=ec2-203-0-113-1.compute.amazonaws.com
+AIRFLOW_REMOTE_SSH_USER=ubuntu
+AIRFLOW_REMOTE_SSH_KEY=~/.ssh/id_rsa
+AIRFLOW_REMOTE_DAG_FOLDER=/opt/airflow/dags
+```
+
+### 2. Verify connectivity
+
+```bash
+make remote-check
+```
+
+### 3. Sync DAG files
+
+```bash
+make remote-sync
+```
+
+This runs `rsync` over SSH to copy everything inside `dags/` to the remote DAGs folder.  Set `AIRFLOW_REMOTE_SSH_HOST` in `.env` before running this target.
+
+### 4. Unpause, trigger, and monitor
+
+```bash
+# Unpause the DAG (required before the first trigger)
+make remote-unpause
+
+# Trigger a run
+make remote-trigger
+
+# Check the last 5 runs
+make remote-status
+```
+
+To target a different DAG, pass `DAG_ID`:
+
+```bash
+make remote-trigger DAG_ID=my_custom_dag
+```
 
 ---
 
@@ -121,3 +209,6 @@ The example DAG sets `in_cluster=False` by default.  When deploying to Kubernete
 
 * Apache Airflow 2.9.x
 * `apache-airflow-providers-cncf-kubernetes` (bundled in the official `apache/airflow:2.9.1` image)
+* `curl` (for remote targets)
+* `rsync` + SSH access (for `remote-sync`)
+
